@@ -1,0 +1,123 @@
+/* app.css — 移动端 UI 覆盖 + 苹方字体 + 朗读条/答案弹窗
+   仅设计目标：手机端。桌面端以 600px 居中列呈现，等同手机版式。 */
+:root{
+  --ft-bg:#fbf9f4;
+  --ft-fg:#222;
+  --ft-accent:#1f6feb;
+  --ft-line:#eee;
+}
+html{ background:#e8e2d3; -webkit-text-size-adjust:100%; text-size-adjust:100%; }
+html,body,table,button,input,select,textarea{
+  font-family:"PingFang SC","Heiti SC",-apple-system,BlinkMacSystemFont,
+    "Helvetica Neue","Microsoft YaHei",sans-serif;
+}
+
+/* ---- 正文基础 ---- */
+body{
+  margin:0 !important;
+  padding:14px 16px 24px !important;
+  background:var(--ft-bg);
+  color:var(--ft-fg);
+  font-size:17px;
+  line-height:1.85;
+  word-wrap:break-word;
+  overflow-wrap:break-word;
+  max-width:600px;
+  margin-left:auto !important;
+  margin-right:auto !important;
+}
+body.ft-reading{ padding-bottom:84px !important; }
+.calibre4{ padding:0 2px; }
+a{ color:var(--ft-accent); }
+
+/* ---- 标题 ---- */
+h2.calibre7{ font-size:1.4em; line-height:1.4; margin:1em 0 .6em; }
+h3.calibre12{ font-size:1.28em; line-height:1.45; margin:1em 0 .6em; }
+h4.calibre18{ font-size:1.14em; line-height:1.5; margin:1em 0 .8em; }
+.centered,.centered1,.centered2,.centered3,.centered4,.centered5{ text-align:center; }
+
+/* ---- 段落 ---- */
+p.calibre13{ font-size:1em; line-height:1.85; margin:0 0 .65em; text-indent:2em; }
+p.bold{ font-size:1em; line-height:1.7; margin:.6em 0 .35em; text-indent:0; }
+p.normalp2{ font-size:1em !important; margin:0 !important; }
+
+/* ---- 词汇/解释块 ---- */
+.kt{ background:#f3efe2; border-radius:8px; padding:10px 12px; margin:.5em 0; }
+.kt p{ text-indent:0; }
+.brk,.calibre5{ display:block; height:.4em; }
+
+/* ---- 阅读速度表 ---- */
+table.calibre14{
+  width:100% !important; margin:0 0 1em !important;
+  font-size:.8em; border-collapse:collapse;
+}
+table.calibre14 td{ padding:5px 6px !important; }
+table.calibre14 p{ font-size:1em !important; margin:0 !important; text-indent:0 !important; }
+
+/* ---- 图片自适应 ---- */
+img{ max-width:100% !important; height:auto !important; }
+.calibre3,.calibre22{ max-width:100% !important; height:auto !important; }
+
+/* ---- 分隔线 ---- */
+hr.linesolidgray{ margin:1.1em 0; }
+
+/* ===== 朗读悬浮条 ===== */
+#ft-bar{
+  position:fixed; left:0; right:0; bottom:0; z-index:9998;
+  display:flex; align-items:center; gap:8px;
+  max-width:600px; margin:0 auto;
+  padding:10px 14px calc(10px + env(safe-area-inset-bottom,0px));
+  background:#fff; border-top:1px solid var(--ft-line);
+  box-shadow:0 -2px 14px rgba(0,0,0,.07);
+}
+#ft-bar-label{
+  flex:0 0 auto; font-size:.8em; color:#888; max-width:34%;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+#ft-toggle{
+  flex:1; min-height:44px; border:none; border-radius:10px;
+  font-size:1em; font-weight:600; color:#fff; background:var(--ft-accent);
+  cursor:pointer; padding:8px 16px; -webkit-tap-highlight-color:transparent;
+}
+#ft-toggle.ft-playing{ background:#c0392b; }
+#ft-toggle.ft-paused{ background:#e67e22; }
+
+/* ---- 逐句朗读高亮 ---- */
+.ft-cur{
+  background:#e67e22 !important;
+  color:#fff !important;
+  border-radius:3px;
+  padding:1px 0;
+  box-decoration-break:clone;
+  -webkit-box-decoration-break:clone;
+}
+.ft-cur *{ color:#fff !important; background:transparent !important; }
+
+#ft-next{
+  flex:0 0 auto; min-width:64px; min-height:44px; border:none;
+  border-radius:10px; background:#eee; color:#555;
+  font-size:14px; font-weight:600; cursor:pointer;
+  padding:8px 14px; -webkit-tap-highlight-color:transparent;
+  font-family:inherit; line-height:1.2;
+}
+#ft-next:active{ background:#ddd; color:#1f6feb; }
+
+/* ===== 答案弹窗 ===== */
+#ft-modal{
+  position:fixed; top:0; left:0; right:0; bottom:0; z-index:9999;
+  display:none; align-items:center; justify-content:center;
+  background:rgba(0,0,0,.45); padding:20px;
+}
+#ft-modal.show{ display:flex; }
+#ft-card{
+  background:#fff; border-radius:14px; width:100%; max-width:460px;
+  max-height:80vh; overflow:auto; padding:24px 20px 18px; position:relative;
+  box-shadow:0 10px 40px rgba(0,0,0,.25);
+}
+#ft-close{
+  position:absolute; top:8px; right:14px; cursor:pointer;
+  font-size:26px; color:#999; line-height:1; -webkit-tap-highlight-color:transparent;
+}
+#ft-body{ font-size:16px; line-height:1.78; color:#222; }
+#ft-body a{ color:#888; text-decoration:none; }
+#ft-body br{ display:block; }

@@ -1,17 +1,20 @@
 /**
  * reader.js — 英国《金融时报》原文阅读精选集 增强脚本（移动端）
  *
- * 1) 英文原文逐句朗读：底部悬浮播放条，支持「朗读 / 暂停 / 继续」，
- *    调用浏览器原生 SpeechSynthesis API。朗读时自动滚动内容到可视区，
- *    当前朗读的句子高亮为「橙色背景 + 白色文字」。
+ * 1) 英文原文逐句朗读：底部悬浮播放条，支持「朗读 / 暂停 / 继续」。
+ *    朗读时自动滚动内容到可视区，当前朗读的句子高亮为「橙色背景 + 白色文字」。
+ *    两条可选链路：
+ *      - 标准音：浏览器原生 SpeechSynthesis，零下载、秒开，音色偏机械。
+ *      - 高音质：按需加载 Kokoro-82M 神经语音（neural-tts.js），音色自然，
+ *        支持音色切换。首次点击需下载约 92MB 模型，失败时自动回退标准音。
  * 2) 「下一篇」跳转阅读顺序的下一篇文章（articles_nav.js 提供顺序）。
  * 3) 课后阅读理解的「答案」链接改为弹窗直接显示答案与解析。
  *
  * 仅在检测到英文标题（含「（NNN words）」标记）的页面生效，其余页面静默无操作。
  *
  * 暂停实现说明：iOS Safari 不支持 speechSynthesis.pause()/resume()，
- * 故「暂停」采用 cancel + 记忆当前句，「继续」从当前句重新朗读，
- * 以换取各平台一致体验。
+ * 故标准音链路的「暂停」采用 cancel + 记忆当前句，「继续」从当前句重新朗读；
+ * 高音质链路走 Web Audio，暂停/续播是精确位置续播。
  */
 (function () {
   'use strict';
@@ -23,10 +26,39 @@
   var STATE = 'idle';            // idle | playing | paused
   var toggleBtn = null;
   var nextBtn = null;
+  var hqBtn = null;              // 「高音质」按钮
+  var voiceSel = null;           // 音色下拉（高音质链路开启后出现）
 
   var playlist = [];             // [{ el, text }]：句子列表
   var cur = -1;                  // 当前句下标（最近一次开始朗读的句子）
+  var curEl = null;              // 当前高亮的元素（两条链路共用）
   var runId = 0;                 // 轮次令牌：主动打断/重启时自增，用于忽略旧 utterance 迟到的回调
+
+  /* ---- 高音质（Kokoro 神经语音）链路状态 ---- */
+  var MAX_CHUNK = 320;           // 单次合成的最大字符数，过长会被模型截断
+  var NEURAL_SCRIPT = 'neural-tts.js';
+  var neural = null;             // 动态 import 的 neural-tts.js 模块
+  var hqState = 'off';           // off | loading | on
+  var neuralQueue = [];          // [{ text, marks:[{el,start,end}] }]：片段队列
+  var neuralVoice = 'bm_george';
+  var barLabel = null;
+  var barTitle = '';
+
+  try { neuralVoice = localStorage.getItem('ft-neural-voice') || neuralVoice; } catch (e) { /* 隐私模式 */ }
+
+  // reader.js 是普通脚本，动态 import 会以文档地址为基准解析，
+  // 所以从自身 script 标签推出目录，保证 text/ 子页面也能找到模块。
+  var SCRIPT_BASE = (function () {
+    var s = document.currentScript;
+    if (!s || !s.src) {
+      var all = document.getElementsByTagName('script');
+      for (var i = all.length - 1; i >= 0; i--) {
+        if (/reader\.js/.test(all[i].src || '')) { s = all[i]; break; }
+      }
+    }
+    if (s && s.src) return s.src.replace(/reader\.js.*$/, '');
+    return '../';
+  })();
 
   function ready(fn) {
     if (document.readyState !== 'loading') fn();
@@ -62,6 +94,22 @@
     }
     if (buf.trim()) out.push(buf.trim());
     return out;
+  }
+
+  // 文本规范化：语料里的金额缩写（$4bn / $238m）与逗号后缺空格
+  // （如 weekend,smashing）会被合成器读成乱码，先整成可直接朗读的写法。
+  function normalize(text) {
+    return String(text)
+      .replace(/\$\s*([\d.]+)\s*(?:bn|billion)\b/gi, '$1 billion dollars')
+      .replace(/£\s*([\d.]+)\s*(?:bn|billion)\b/gi, '$1 billion pounds')
+      .replace(/\$\s*([\d.]+)\s*(?:m|mn|million)\b/gi, '$1 million dollars')
+      .replace(/£\s*([\d.]+)\s*(?:m|mn|million)\b/gi, '$1 million pounds')
+      .replace(/\$\s*([\d.,]+)/g, '$1 dollars')
+      .replace(/£\s*([\d.,]+)/g, '$1 pounds')
+      // 逗号后缺空格（排除千分位数字 1,000）
+      .replace(/,([^\s\d])/g, ', $1')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
   }
 
   function findEnglishTitle() {
@@ -137,25 +185,111 @@
     return list;
   }
 
+  /* =============== 高音质播放队列 =============== */
+
+  // 单次合成有输入长度上限（超限会被静默截断），把过长的单元切碎。
+  // 切出来的碎片都指向同一个元素，高亮行为不变。
+  function splitUnit(el, text, out) {
+    if (text.length <= MAX_CHUNK) {
+      if (text) out.push({ el: el, text: text });
+      return;
+    }
+    var parts = splitBySentences(text);
+    for (var i = 0; i < parts.length; i++) {
+      var p = parts[i];
+      if (p.length <= MAX_CHUNK) { out.push({ el: el, text: p }); continue; }
+      // 极端长句：按空格硬切，保证不截断
+      var pos = 0;
+      while (pos < p.length) {
+        var end = Math.min(pos + MAX_CHUNK, p.length);
+        if (end < p.length) {
+          var sp = p.lastIndexOf(' ', end);
+          if (sp > pos) end = sp;
+        }
+        out.push({ el: el, text: p.slice(pos, end).trim() });
+        pos = end + 1;
+      }
+    }
+  }
+
+  // 把若干句子打包成一个片段：text 为拼接后的文本，marks 记录每句在其中的字符区间
+  function packChunk(units) {
+    var text = '';
+    var marks = [];
+    for (var i = 0; i < units.length; i++) {
+      if (i) text += ' ';
+      marks.push({ el: units[i].el, start: text.length, end: text.length + units[i].text.length });
+      text += units[i].text;
+    }
+    return { text: text, marks: marks };
+  }
+
+  function buildNeuralQueue(titleEl) {
+    var out = [];
+    var title = normalize((titleEl.textContent || '').replace(WORDS_RE, '').trim());
+    if (title) out.push({ text: title, marks: [{ el: titleEl, start: 0, end: title.length }] });
+
+    var paras = englishParagraphs(titleEl);
+    for (var i = 0; i < paras.length; i++) {
+      var r = splitParagraph(paras[i]);
+      var units = [];
+      for (var k = 0; k < r.sentences.length; k++) {
+        var el = (r.spans && r.spans[k]) ? r.spans[k] : paras[i];
+        splitUnit(el, normalize(r.sentences[k]), units);
+      }
+      // 贪心合片：句子逐个拼进当前片段，超过上限就换一片
+      var group = [];
+      var size = 0;
+      for (var u = 0; u < units.length; u++) {
+        var add = units[u].text.length + (group.length ? 1 : 0);
+        if (group.length && size + add > MAX_CHUNK) {
+          out.push(packChunk(group));
+          group = [];
+          size = 0;
+          add = units[u].text.length;
+        }
+        size += add;
+        group.push(units[u]);
+      }
+      if (group.length) out.push(packChunk(group));
+    }
+    return out;
+  }
+
+  // 按播放进度（片段内字符偏移）找出该高亮的句子
+  function markAt(marks, offset) {
+    for (var i = marks.length - 1; i >= 0; i--) {
+      if (offset >= marks[i].start) return marks[i];
+    }
+    return marks[0] || null;
+  }
+
   /* =============== 朗读控制 =============== */
 
   function clearHighlight() {
-    var curEl = document.querySelector('.ft-cur');
-    if (curEl) curEl.classList.remove('ft-cur');
+    if (curEl) { curEl.classList.remove('ft-cur'); curEl = null; }
+    var stray = document.querySelector('.ft-cur');
+    if (stray) stray.classList.remove('ft-cur');
+  }
+
+  // 高亮某个句子元素并滚动到可视区；元素未变则不动，避免播放中反复滚动
+  function highlightEl(el) {
+    if (!el || el === curEl) return;
+    clearHighlight();
+    if (!el.classList) return;
+    curEl = el;
+    el.classList.add('ft-cur');
+    try {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    } catch (e) {
+      el.scrollIntoView(true);
+    }
   }
 
   function setCurrent(i) {
-    clearHighlight();
     if (i < 0 || i >= playlist.length) return;
     cur = i;
-    var item = playlist[i];
-    if (item.el && item.el.classList) item.el.classList.add('ft-cur');
-    // 自动滚动到可视区域（中段居中，避免被底部悬浮条遮挡）
-    try {
-      item.el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    } catch (e) {
-      item.el.scrollIntoView(true);
-    }
+    highlightEl(playlist[i].el);
   }
 
   function pickVoice(u) {
@@ -187,7 +321,7 @@
     setCurrent(cur);            // 立即高亮第一句，减少等待
     for (var i = from; i < playlist.length; i++) {
       (function (idx) {
-        var u = new SpeechSynthesisUtterance(playlist[idx].text);
+        var u = new SpeechSynthesisUtterance(normalize(playlist[idx].text));
         u.lang = 'en-US';
         u.rate = 1.0;
         pickVoice(u);
@@ -237,6 +371,7 @@
   function stopSpeaking() {
     runId++;
     if (synth) synth.cancel();
+    if (neural) neural.stop();   // 高音质链路一并停掉
     clearHighlight();
     setButtonState('idle');
   }
@@ -257,6 +392,10 @@
   }
 
   function onToggle() {
+    if (hqState === 'on') {
+      toggleNeural();
+      return;
+    }
     if (!synth) { window.alert('当前浏览器不支持语音朗读功能'); return; }
     if (STATE === 'idle') {
       setButtonState('playing');
@@ -266,6 +405,137 @@
     } else if (STATE === 'paused') {
       resumeSpeaking();
     }
+  }
+
+  /* =============== 高音质链路控制 =============== */
+
+  function setBarLabel(text) {
+    if (barLabel) barLabel.textContent = text;
+  }
+
+  // 高音质模式下标题位被音色下拉占用；等待合成本片时临时把该位置让给提示文字
+  function setBarBusy(busy) {
+    if (busy) {
+      if (voiceSel) voiceSel.style.display = 'none';
+      if (barLabel) barLabel.style.display = '';
+      setBarLabel('合成中…');
+    } else {
+      if (barLabel) barLabel.style.display = 'none';
+      if (voiceSel) voiceSel.style.display = '';
+    }
+  }
+
+  function neuralHooks() {
+    return {
+      onStart: function (i) { setBarBusy(false); onNeuralProgress(i, 0); },
+      onProgress: onNeuralProgress,
+      onWait: function () { setBarBusy(true); },
+      onEnd: function () { clearHighlight(); setButtonState('idle'); },
+      onError: function (e) { neuralFailed(e); }
+    };
+  }
+
+  // 片段播放中：按比例换算成片段内字符偏移，定位到该高亮的句子
+  function onNeuralProgress(i, ratio) {
+    var item = neuralQueue[i];
+    if (!item) return;
+    var m = markAt(item.marks, Math.round(ratio * item.text.length));
+    if (m) highlightEl(m.el);
+  }
+
+  function toggleNeural() {
+    if (!neural) return;
+    if (STATE === 'playing') {
+      neural.pause();
+      setButtonState('paused');
+    } else if (STATE === 'paused') {
+      setButtonState('playing');
+      neural.resume();
+    } else {
+      if (!neuralQueue.length) { window.alert('未找到英文原文'); return; }
+      setButtonState('playing');
+      neural.play(neuralQueue, 0, neuralHooks());
+    }
+  }
+
+  function buildVoiceSelect() {
+    var sel = document.createElement('select');
+    sel.id = 'ft-voice';
+    var list = (neural && neural.VOICES) || [];
+    for (var i = 0; i < list.length; i++) {
+      var o = document.createElement('option');
+      o.value = list[i].id;
+      o.textContent = list[i].label;
+      sel.appendChild(o);
+    }
+    sel.value = neuralVoice;
+    sel.addEventListener('change', function () {
+      neuralVoice = sel.value;
+      try { localStorage.setItem('ft-neural-voice', neuralVoice); } catch (e) { /* 忽略 */ }
+      if (neural) neural.setVoice(neuralVoice);
+    });
+    return sel;
+  }
+
+  function turnOffNeural() {
+    if (neural) neural.stop();
+    hqState = 'off';
+    if (hqBtn) hqBtn.classList.remove('ft-hq-on');
+    if (voiceSel) voiceSel.style.display = 'none';
+    if (barLabel) barLabel.style.display = '';
+    setBarLabel(barTitle);
+    clearHighlight();
+    setButtonState('idle');
+  }
+
+  // 加载失败：模块或模型不可用时退回标准音链路，两条链路互不影响
+  function neuralFailed(err) {
+    if (err) console.warn('[ft] 高音质朗读失败：', err);
+    var wasLoading = hqState === 'loading';
+    hqState = 'off';
+    if (hqBtn) hqBtn.classList.remove('ft-hq-on', 'ft-hq-loading');
+    if (toggleBtn) toggleBtn.disabled = false;
+    if (voiceSel) voiceSel.style.display = 'none';
+    if (barLabel) barLabel.style.display = '';
+    setBarLabel(barTitle);
+    clearHighlight();
+    setButtonState('idle');
+    if (wasLoading) {
+      window.alert('高音质引擎加载失败（网络受限或浏览器不支持），已保留「朗读原文」标准朗读。');
+    }
+  }
+
+  function onHq() {
+    if (hqState === 'loading') return;
+    if (hqState === 'on') { turnOffNeural(); return; }
+
+    hqState = 'loading';
+    if (hqBtn) { hqBtn.classList.add('ft-hq-loading'); }
+    if (toggleBtn) toggleBtn.disabled = true;   // 加载期间避免两条链路抢音频
+    stopSpeaking();
+    setBarLabel('加载引擎…');
+
+    import(SCRIPT_BASE + NEURAL_SCRIPT).then(function (mod) {
+      neural = mod;
+      return mod.load({ onProgress: function (p) { setBarLabel(p.text); } });
+    }).then(function () {
+      hqState = 'on';
+      if (hqBtn) {
+        hqBtn.classList.remove('ft-hq-loading');
+        hqBtn.classList.add('ft-hq-on');
+      }
+      if (toggleBtn) toggleBtn.disabled = false;
+      neural.setVoice(neuralVoice);
+      // 用下拉框顶替标题位置，方便切换音色
+      if (!voiceSel) {
+        voiceSel = buildVoiceSelect();
+        hqBtn.parentNode.insertBefore(voiceSel, hqBtn);
+      }
+      voiceSel.style.display = '';
+      if (barLabel) barLabel.style.display = 'none';
+      setBarLabel(barTitle);
+      toggleNeural();   // 加载完成后直接开始朗读
+    }).catch(neuralFailed);
   }
 
   /* 跳转到阅读顺序的下一篇；已是最后一篇则返回目录 */
@@ -321,6 +591,7 @@
     bar.innerHTML =
       '<span id="ft-bar-label">' + (titleText || '英文原文') + '</span>' +
       '<button type="button" id="ft-toggle">朗读原文</button>' +
+      '<button type="button" id="ft-hq">高音质</button>' +
       '<button type="button" id="ft-next">下一篇</button>';
     return bar;
   }
@@ -339,13 +610,18 @@
     if (titleEl) {
       document.body.classList.add('ft-reading');
       playlist = buildPlaylist(titleEl);
+      neuralQueue = buildNeuralQueue(titleEl);
 
       var titleText = (titleEl.textContent || '').replace(WORDS_RE, '').trim().slice(0, 24);
+      barTitle = titleText;
       var bar = buildBar(titleText);
       document.body.appendChild(bar);
+      barLabel = bar.querySelector('#ft-bar-label');
       toggleBtn = bar.querySelector('#ft-toggle');
+      hqBtn = bar.querySelector('#ft-hq');
       nextBtn = bar.querySelector('#ft-next');
       toggleBtn.addEventListener('click', onToggle);
+      hqBtn.addEventListener('click', onHq);
       nextBtn.addEventListener('click', goNext);
       // 页面卸载时停止朗读，避免悬留
       window.addEventListener('pagehide', stopSpeaking);

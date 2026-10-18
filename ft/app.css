@@ -64,23 +64,41 @@ hr.linesolidgray{ margin:1.1em 0; }
 /* ===== 朗读悬浮条 ===== */
 #ft-bar{
   position:fixed; left:0; right:0; bottom:0; z-index:9998;
-  display:flex; align-items:center; gap:8px;
+  display:flex; align-items:center; gap:6px;
   max-width:600px; margin:0 auto;
   padding:10px 14px calc(10px + env(safe-area-inset-bottom,0px));
   background:#fff; border-top:1px solid var(--ft-line);
   box-shadow:0 -2px 14px rgba(0,0,0,.07);
 }
 #ft-bar-label{
-  flex:0 0 auto; font-size:.8em; color:#888; max-width:34%;
+  flex:0 1 auto; min-width:0; max-width:28%;
+  font-size:.75em; color:#888;
   white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
 }
 #ft-toggle{
-  flex:1; min-height:44px; border:none; border-radius:10px;
-  font-size:1em; font-weight:600; color:#fff; background:var(--ft-accent);
-  cursor:pointer; padding:8px 16px; -webkit-tap-highlight-color:transparent;
+  flex:1 1 0; min-width:0; min-height:44px; border:none; border-radius:10px;
+  font-size:15px; font-weight:600; color:#fff; background:var(--ft-accent);
+  cursor:pointer; padding:8px; white-space:nowrap;
+  -webkit-tap-highlight-color:transparent;
 }
 #ft-toggle.ft-playing{ background:#c0392b; }
 #ft-toggle.ft-paused{ background:#e67e22; }
+#ft-toggle:disabled{ opacity:.5; }
+
+/* ---- 高音质开关与音色选择 ---- */
+#ft-hq{
+  flex:0 0 auto; width:54px; min-height:44px; border:none; border-radius:10px;
+  background:#eee; color:#555; font-size:12px; font-weight:600;
+  cursor:pointer; padding:0; line-height:1.15; font-family:inherit;
+  -webkit-tap-highlight-color:transparent;
+}
+#ft-hq.ft-hq-on{ background:var(--ft-accent); color:#fff; }
+#ft-hq.ft-hq-loading{ background:#e67e22; color:#fff; }
+#ft-voice{
+  flex:0 0 auto; max-width:28%; min-height:44px;
+  border:none; border-radius:10px; background:#f1f1f1; color:#555;
+  font-size:12px; font-family:inherit; padding:0 2px;
+}
 
 /* ---- 逐句朗读高亮 ---- */
 .ft-cur{
@@ -94,10 +112,10 @@ hr.linesolidgray{ margin:1.1em 0; }
 .ft-cur *{ color:#fff !important; background:transparent !important; }
 
 #ft-next{
-  flex:0 0 auto; min-width:64px; min-height:44px; border:none;
+  flex:0 0 auto; width:54px; min-height:44px; border:none;
   border-radius:10px; background:#eee; color:#555;
-  font-size:14px; font-weight:600; cursor:pointer;
-  padding:8px 14px; -webkit-tap-highlight-color:transparent;
+  font-size:12px; font-weight:600; cursor:pointer;
+  padding:0; -webkit-tap-highlight-color:transparent;
   font-family:inherit; line-height:1.2;
 }
 #ft-next:active{ background:#ddd; color:#1f6feb; }
